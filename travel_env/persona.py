@@ -86,6 +86,21 @@ class ArchetypeSpec:
     comm_styles: tuple[CommStyle, ...]
 
 
+# Per-archetype budget tolerance bands (low, high) for the concave budget
+# bell in reward.py. A budget traveler expects to spend ~half the cap; a
+# luxury traveler expects to spend most of it. Hardcoded defaults (0.55,
+# 0.95) systematically under-rewarded budget personas because their actual
+# spend ratio was below the lower bound.
+ARCHETYPE_BUDGET_BANDS: dict[str, tuple[float, float]] = {
+    "budget":       (0.40, 0.80),
+    "luxury":       (0.80, 0.98),
+    "foodie":       (0.55, 0.92),
+    "family":       (0.60, 0.95),
+    "history_buff": (0.50, 0.90),
+    "business":     (0.70, 0.98),
+}
+
+
 ARCHETYPES: dict[Archetype, ArchetypeSpec] = {
     "budget": ArchetypeSpec(
         act_weights={"history": 0.35, "nature": 0.30, "food": 0.20, "family": 0.10, "nightlife": 0.05},
@@ -170,12 +185,13 @@ def sample_profile(seed: int) -> PersonaProfile:
     soft_prefs["flight_cabin"] = spec.flight_cabin
     soft_prefs["flight_max_stops"] = spec.flight_max_stops
 
+    budget_low, budget_high = ARCHETYPE_BUDGET_BANDS.get(archetype, (0.55, 0.95))
     tolerances = {
         "hotel_stars": 1.0,
         "act_category_gap": 0.15,
         "flight_cabin_levels": 1.0,
-        "budget_low_ratio": 0.55,
-        "budget_high_ratio": 0.95,
+        "budget_low_ratio": budget_low,
+        "budget_high_ratio": budget_high,
     }
 
     comm_style: CommStyle = str(rng.choice(list(spec.comm_styles)))  # type: ignore[assignment]

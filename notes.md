@@ -265,6 +265,25 @@ Worth flagging in the README: if we wanted to force cheapest to confront disrupt
 - reward: every component + every documented exploit defense
 - baselines: each runs to completion, aggregate ordering holds
 
+### archetype-aware budget tolerance bands
+
+Original `budget_low_ratio=0.55, high=0.95` was the same for every archetype. That under-rewards budget personas (their actual spend is well below 0.55 of cap) and would over-reward luxury ones if cheap. Added `ARCHETYPE_BUDGET_BANDS` in persona.py:
+
+```
+budget       0.40-0.80   (budget travelers spend less, cap their "good zone" lower)
+luxury       0.80-0.98   (expect to spend most of the cap)
+foodie       0.55-0.92
+family       0.60-0.95
+history_buff 0.50-0.90
+business     0.70-0.98
+```
+
+100-seed re-run:
+- before: cheapest=0.405, heuristic=0.412, gap=+0.007
+- after:  cheapest=0.400, heuristic=0.411, gap=+0.011
+
+Small effect. Most of the heuristic-over-cheapest delta lives in `preference_coverage` (activities), not `budget_efficiency`. Honest takeaway: the bands are a more principled model of persona budget expectations, but tightening them isn't enough to make cheapest look obviously bad. To widen the gap meaningfully, eval would need to pass `profile` so heuristic can use soft prefs in selection — that's the bigger lever.
+
 ## eval
 
 `python eval.py --episodes 50 --seed 42 --baselines random,cheapest,heuristic [--llm-judge] [--persona-mode llm|scripted]`
