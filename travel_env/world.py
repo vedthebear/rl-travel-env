@@ -97,8 +97,9 @@ class PendingEvent:
 class World:
     """Holds the deterministic RNG and any cached per-episode inventory state."""
     rng: np.random.Generator
+    # Populated when a flight is booked; not currently read by anything but kept
+    # as a hook for later analytics (e.g. "what did the agent actually commit to").
     booked_flight_ids: set[str] = field(default_factory=set)
-    booked_hotel_ids: set[str] = field(default_factory=set)
     # Caches: search-arg fingerprint -> result list (for idempotence).
     _search_cache: dict[str, list] = field(default_factory=dict)
     # Per-city procedural hotel pools (lazy).

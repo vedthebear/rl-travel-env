@@ -6,8 +6,6 @@ downstream test becomes flaky.
 
 from __future__ import annotations
 
-import pytest
-
 from travel_env.world import (
     Activity,
     CITIES,

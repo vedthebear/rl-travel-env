@@ -30,7 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from travel_env.baselines import cheapest_policy, heuristic_policy, random_policy
-from travel_env.env import Action, TravelEnv
+from travel_env.env import TravelEnv
 from travel_env.persona import sample_profile
 from travel_env.rollout import (
     parse_tool_call,
