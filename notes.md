@@ -204,6 +204,39 @@ So at default tolerances (0.55, 0.95): peak at 0.75, score = 0.75 at ratio ≈ 0
 - Sensitivity of total reward to `budget_low/high_ratio` (persona archetype tightening).
 - Compare `corr(rule, judge)` across personas — is the rule-based proxy archetype-fair?
 
+---
+
+## baselines.py decisions (during build)
+
+- **Stateless functions, not classes.** Match the skeleton signatures and avoid persistence machinery. State is derivable from the obs each turn — what's booked, what's tentative, what was last_result. Keeps the API trivial for eval.py to call.
+- **`profile` is an optional kwarg.** When eval.py uses signature inspection it only passes `rng`, so `profile=None` is the default path. Heuristic still works (uses obs.state.clock for trip params and reasonable defaults for picks).
+- **All three policies share one state machine** (`_flow_action`) that builds the trip in a deterministic order: disruption recovery → outbound → return → hotel → book base → activities (heuristic only) → propose (heuristic only) → submit. Mode flag (`cheapest` vs `heuristic`) toggles selection behavior + activity/propose phases. No code duplication across baselines.
+- **Random is truly random over context-valid actions.** Searches with sensible defaults, picks add/book/swap/remove/propose/submit by uniform sampling from valid candidates. Often submits with an empty itinerary (gate=0). That IS the floor we want to surface.
+- **Cheapest deliberately skips activities and propose_to_client.** The whole point of cheapest as a baseline is "minimize spend at all costs." Adding activities or iterating with the client both cost money or turns. We let it run its degenerate strategy and observe what the reward function does.
+- **Heuristic without profile falls back to "cheapest among hard-feasible."** Without persona soft prefs there's nothing better to do. The differentiator is that heuristic *still adds activities* and *still proposes once* — that's where it pulls ahead of cheapest on pref_coverage.
+- **`_pick` filters by hard_constraints first**, then runs mode-specific selection on the survivors. If nothing survives, it falls back to the unfiltered set so we always return a valid id (gate will fail, but we don't crash).
+
+### supporting change in env.py
+
+Added `origin`, `dest`, `group_size`, `no_overnight_flights`, `max_stops`, `required_amenities` to `obs.state.clock`. Rationale: these are *publicly stated* by the client in the request text. Exposing them structurally lets non-LLM policies filter cleanly without parsing free text. **Soft prefs stay secret** (those are inferred from tone / preference statements; the agent has to actually read the request to score well on them).
+
+### IATA ↔ city name matching
+
+Both reward.py and baselines.py need to match flights tagged with IATA codes (`SIN`) against personas carrying city names (`Singapore`). Each module ships its own tiny `_IATA_TO_NAME` map derived from `world.CITIES`. Small DRY violation but the alternative (a shared helper module) felt heavier for a 4-line lookup.
+
+### empirical baseline ranking (20 seeds, scripted persona)
+
+```
+              reward    gate%   pref   budget   coh
+random       -0.014       0%   0.03    0.05    0.03
+cheapest     +0.402      75%   0.40    0.27    0.79
+heuristic    +0.428      80%   0.50    0.29    0.80
+```
+
+Strict ordering on every metric: heuristic > cheapest > random. The reward function differentiates as designed.
+
+The gap between cheapest and heuristic is mostly preference_coverage (0.40 → 0.50), driven by heuristic adding two activities per trip. If eval.py passed `profile` to baselines (currently it doesn't — clean separation), heuristic would pull further ahead via soft_pref-aware ranking. Worth flagging as a small enhancement.
+
 ## eval
 
 `python eval.py --episodes 50 --seed 42 --baselines random,cheapest,heuristic [--llm-judge] [--persona-mode llm|scripted]`

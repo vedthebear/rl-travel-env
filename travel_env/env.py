@@ -694,6 +694,16 @@ class TravelEnv:
                     "turns_remaining": max(0, self._max_turns - self._turn),
                     "depart_date": hard.depart_date if hard else None,
                     "return_date": hard.return_date if hard else None,
+                    "origin": prof.origin_city if prof else None,
+                    "dest": prof.dest_city if prof else None,
+                    "group_size": hard.group_size if hard else 1,
+                    # Hard constraints the client stated up front. These are
+                    # publicly known (typically voiced in the request text);
+                    # exposing them structurally lets non-LLM policies filter
+                    # cleanly without parsing free text.
+                    "no_overnight_flights": hard.no_overnight_flights if hard else False,
+                    "max_stops": hard.max_stops if hard else None,
+                    "required_amenities": list(hard.required_amenities) if hard else [],
                 },
                 "pending_events": [
                     {"type": e.type, "payload": dict(e.payload),
