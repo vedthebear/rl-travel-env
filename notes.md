@@ -296,6 +296,16 @@ Output: per-baseline metrics table + reward decomposition. Expected ordering acr
 
 `--render` prints each turn's action + obs snippet for spot-checks. Weights logged with every run. If `--persona-mode` is run both ways, eval breaks out LLM vs scripted to surface persona-induced variance.
 
+## optional enhancements landed
+
+From the README's prioritized enhancement list:
+- ✅ **#2 disruption engine** (simple, not cascading) — probabilistic flight cancellation, rebook flow, recovery_quality scoring
+- ✅ **#3 client persona system** (full) — 6 archetypes × varied prefs/budgets/flexibility/comm-styles, sampled deterministically per seed
+- ⚠️ **#1 reward-shaping** (partial) — configurable `RewardWeights`, every exploit defense verified empirically; no formal weight-sweep grid (left as future work)
+- ✅ **#6 environment visualization** — `viz.py` runs one baseline against the env and renders a live 4-panel terminal dashboard via `rich.Live`: header (seed/archetype/turn/trip), budget progress bar, color-coded itinerary table, last-action panel. At end-of-episode the action panel is replaced with horizontal reward-component bars. Usage: `uv run python viz.py --seed 42 --baseline heuristic`.
+
+Not shipped: curriculum (#4) and config-driven YAML (#5).
+
 ## what we'd do with more time
 
 - Multi-city itineraries
