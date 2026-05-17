@@ -30,8 +30,13 @@ from rich.table import Table
 from rich.text import Text
 
 from travel_env.baselines import cheapest_policy, heuristic_policy, random_policy
-from travel_env.env import TravelEnv
+from travel_env.env import Action, TravelEnv
 from travel_env.persona import sample_profile
+from travel_env.rollout import (
+    parse_tool_call,
+    render_system_prompt,
+    render_turn_user_message,
+)
 
 
 # --- Per-status color so the eye tracks transitions ----------------------
@@ -238,11 +243,18 @@ _POLICY_FACTORY = {
 
 
 def visualize_episode(*, seed: int, baseline: str, max_turns: int,
-                      turn_delay: float, persona_mode: str = "scripted") -> None:
-    if baseline not in _POLICY_FACTORY:
+                      turn_delay: float, persona_mode: str = "scripted",
+                      llm_model: str = "anthropic/claude-haiku-4.5") -> None:
+    if baseline == "llm":
+        _next_action = _make_llm_driver(llm_model)
+    elif baseline in _POLICY_FACTORY:
+        policy = _POLICY_FACTORY[baseline](seed)
+        def _next_action(_obs, _messages):
+            return policy(_obs)
+    else:
         raise SystemExit(
-            f"unknown baseline {baseline!r}. Available: {list(_POLICY_FACTORY)}")
-    policy = _POLICY_FACTORY[baseline](seed)
+            f"unknown baseline {baseline!r}. "
+            f"Available: {list(_POLICY_FACTORY) + ['llm']}")
 
     env = TravelEnv(seed=seed, persona_mode=persona_mode, max_turns=max_turns)
     obs, reset_info = env.reset()
@@ -252,6 +264,14 @@ def visualize_episode(*, seed: int, baseline: str, max_turns: int,
     last_action: dict | None = None
     total_reward = 0.0
 
+    # LLM driver maintains chat history across turns; baselines ignore it.
+    messages: list[dict] = []
+    if baseline == "llm":
+        messages = [
+            {"role": "system", "content": render_system_prompt(obs)},
+            {"role": "user", "content": render_turn_user_message(obs, first_turn=True)},
+        ]
+
     initial = _compose(seed, obs, display_info, None, max_turns,
                        ended=False, breakdown=None, total_reward=0.0)
     with Live(initial, refresh_per_second=20, screen=False) as live:
@@ -259,7 +279,7 @@ def visualize_episode(*, seed: int, baseline: str, max_turns: int,
         terminated = truncated = False
         breakdown: dict | None = None
         while not (terminated or truncated):
-            action = policy(obs)
+            action = _next_action(obs, messages)
             last_action = action if isinstance(action, dict) else {
                 "tool": getattr(action, "tool", "?"),
                 "args": getattr(action, "args", {}),
@@ -269,6 +289,11 @@ def visualize_episode(*, seed: int, baseline: str, max_turns: int,
             total_reward = reward if (terminated or truncated) else total_reward
             if terminated or truncated:
                 breakdown = step_info.get("reward_breakdown") or {}
+            elif baseline == "llm":
+                messages.append({
+                    "role": "user",
+                    "content": render_turn_user_message(obs),
+                })
             live.update(_compose(
                 seed, obs, display_info, last_action, max_turns,
                 ended=(terminated or truncated),
@@ -277,14 +302,48 @@ def visualize_episode(*, seed: int, baseline: str, max_turns: int,
             time.sleep(turn_delay)
 
 
+def _make_llm_driver(model: str):
+    """Per-turn OpenRouter call. The Live panel re-renders between turns;
+    we don't try to retry on parse failure here — viz is a demo, not a
+    benchmark. If parsing fails, force submit_final so the episode ends
+    cleanly instead of getting stuck in the same broken state.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "--baseline llm requires OPENROUTER_API_KEY (load .env first).")
+    from openai import OpenAI
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+
+    def step_fn(_obs: dict, messages: list[dict]) -> dict:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1024,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        messages.append({"role": "assistant", "content": content})
+        action = parse_tool_call(content)
+        if action is None:
+            return {"tool": "submit_final", "args": {}}
+        return {"tool": action.tool, "args": action.args}
+
+    return step_fn
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--baseline", choices=list(_POLICY_FACTORY), default="heuristic")
+    p.add_argument("--baseline",
+                   choices=list(_POLICY_FACTORY) + ["llm"],
+                   default="heuristic")
     p.add_argument("--max-turns", type=int, default=40)
     p.add_argument("--turn-delay", type=float, default=0.4,
                    help="Seconds to sleep between turns (so a human can follow along).")
     p.add_argument("--persona-mode", choices=["scripted", "llm"], default="scripted")
+    p.add_argument("--llm-model", type=str, default="anthropic/claude-haiku-4.5",
+                   help="Model for the 'llm' baseline rollout (via OpenRouter).")
     args = p.parse_args()
 
     # If LLM mode requested without key, downgrade.
@@ -295,6 +354,7 @@ def main() -> None:
         seed=args.seed, baseline=args.baseline,
         max_turns=args.max_turns, turn_delay=args.turn_delay,
         persona_mode=args.persona_mode,
+        llm_model=args.llm_model,
     )
 
 
