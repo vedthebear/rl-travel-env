@@ -406,19 +406,41 @@ class TravelEnv:
         if item is None:
             return {"ok": False, "error": f"unknown item_id: {item_id}"}
 
-        # Compute the slot's effective price.
+        # Compute the slot's effective price + the meta the reward function reads.
         if isinstance(item, Hotel):
             nights = _nights_between(
                 self._profile.hard.depart_date, self._profile.hard.return_date,
             )
             slot_price = item.price_per_night * max(nights, 1)
-            kind = "hotel"
+            meta = {
+                "kind": "hotel",
+                "city": item.city,
+                "neighborhood": item.neighborhood,
+                "stars": item.stars,
+                "price_per_night": item.price_per_night,
+                "amenities": list(item.amenities),
+                "nights": nights,
+            }
         elif isinstance(item, Flight):
             slot_price = item.price
-            kind = "flight"
+            meta = {
+                "kind": "flight",
+                "origin": item.origin,
+                "dest": item.dest,
+                "depart_iso": item.depart_iso,
+                "arrive_iso": item.arrive_iso,
+                "stops": item.stops,
+                "cabin": item.cabin,
+                "overnight": item.overnight,
+            }
         elif isinstance(item, Activity):
             slot_price = item.price
-            kind = "activity"
+            meta = {
+                "kind": "activity",
+                "city": item.city,
+                "category": item.category,
+                "duration_hours": item.duration_hours,
+            }
         else:
             return {"ok": False, "error": f"unsupported item type: {type(item).__name__}"}
 
@@ -431,7 +453,7 @@ class TravelEnv:
 
         self._itinerary.append(ItinerarySlot(
             slot=slot, item_id=item_id, name=getattr(item, "name", item_id),
-            price=slot_price, status="tentative", meta={"kind": kind},
+            price=slot_price, status="tentative", meta=meta,
         ))
         return {
             "ok": True, "slot": slot, "item_id": item_id,

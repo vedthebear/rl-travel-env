@@ -6,6 +6,11 @@ Public scratchwork. Will become the basis of the README. Informal on purpose.
 
 RL env for an LLM-based travel agent. Three-hour build. Synthetic world. Tool-call action space. Rule-based reward + LLM persona.
 
+one-liner:
+A deterministic synthetic travel world (`world.py`) with a structured persona (`persona.py`) that's voiced by an LLM, wrapped in a Gym-style state machine (`env.py`) that exposes a ~10-tool action space, scored by composable rule-based rewards (`reward.py`), and driven by either an LLM rollout or a heuristic baseline.
+
+the env owns the truth, the LLMs handle natural language and back-and-forth interaction to simulate an actual conversation. but persona's preferences are structured data, reward is actually computed from state. LLM-judge is just a final diagnostic, not the primary signal
+
 ---
 
 ## interface
@@ -132,6 +137,72 @@ Properties we're baking in (and why):
 - **Auto-downgrade `persona_mode="llm"` to `"scripted"` if `OPENROUTER_API_KEY` unset.** No-key path always works — important for CI and for reviewers without credentials.
 - **`_action_from_input` accepts both `dict` and `Action`.** Rollout passes dicts (parsed from LLM JSON); programmatic baselines can pass `Action` directly. No JSON parsing in the env — that's the rollout's job.
 - **`info` dict shape mirrors Gymnasium expectations**: stable keys (`turn`, `reward_breakdown`, `disruption_fired_turn`). Reward breakdown is converted to a plain dict (not a dataclass) for serializability.
+- **`add_to_itinerary` enriches `slot.meta` with item attributes** (stars, neighborhood, amenities for hotels; stops, cabin, overnight for flights; category for activities). Otherwise reward.py would have to call `world.get_details(item_id)` inside its scoring loop — coupling reward to world for no good reason. Slot is self-describing for downstream consumers.
+
+---
+
+## reward.py decisions (during build)
+
+This was the README's flagged "hardest part." Spent extra cycles on the exploit audit.
+
+### shape
+
+- **Sparse, terminal-only.** Reward returned by `step` is 0 every turn except the last; full `RewardBreakdown` is in `info["reward_breakdown"]`. "Good third turn" isn't a thing in travel planning.
+- **Multiplicative gate × additive soft sum**. Failing any hard constraint zeros everything except the step penalty. Soft components add inside the gated bracket.
+- **Step penalty is post-gate** (not multiplied through). So even an empty/failed episode is dinged for dithering. Free for the first 5 turns.
+
+### components
+
+- **hard_constraint_gate {0, 1}**: budget ≤ cap; ≥1 booked hotel; ≥1 outbound + ≥1 return flight on the right routes; `no_overnight_flights` respected; `max_stops` respected; `required_amenities` present on all booked hotels. Multiplicative.
+- **preference_coverage [0, 1]**: weighted score over persona soft_prefs. Axes scored: `act_<category>` (linear up to 2 in-category activities — two beats one, two beats four; anti-greedy on the easy pref), `hotel_stars` (distance from target, tolerance-aware), `flight_cabin` (rank distance, tolerance-aware), `flight_max_stops` (1.0 if within target, linear decay above). Persona-omitted axes contribute nothing.
+- **budget_efficiency [0, 1]**: concave bell. **Tolerances are persona-supplied** — `budget_low_ratio` and `budget_high_ratio` from `profile.tolerances`. Peak at midpoint, zero at the bounds. Default 0.55–0.95 (peak 0.75). The bell shape is what makes "always cheapest" lose: even if you stay coherent, spending 30% of cap hits the lower zero.
+- **coherence [0, 1] (partial)**: 5 checks — outbound route, return route, hotels in dest, activities in dest, dates aligned. Each check is 0 or 1; score = sum/5. Partial credit (not 0/1 binary) so a mostly-coherent itinerary doesn't get crushed by a single date typo.
+- **recovery_quality [0, 1] or None**: weighted 0.4 price_efficiency + 0.4 time_efficiency + 0.2 downstream_preservation. **None if no disruption fired** (remaining weights renormalized). Brutal: never rebooking = 0.
+- **step_penalty ≥ 0**: `0.005 × max(0, steps - 5)`. So 10 turns = -0.025, 20 turns = -0.075, 40 turns = -0.175. Meaningful at the high end, near-invisible for snappy episodes.
+
+### dynamic weight renormalization
+
+Two regimes:
+- Disruption fired → composition uses all four weights as-is (0.35 + 0.20 + 0.20 + 0.25 = 1.00).
+- No disruption → recovery_quality is None; remaining three weights renormalized to sum to 1 (preference 0.467, budget 0.267, coherence 0.267).
+
+Why renormalize: keeps reward magnitudes comparable across episode types. Otherwise no-disruption episodes would systematically score 25% lower for "lucking out" — perverse.
+
+### the exploit audit (verified with the smoke test)
+
+| Exploit | Defense | Verified? |
+|---|---|---|
+| Always cheapest flight (multi-stop overnight) | hard.no_overnight + hard.max_stops gates kill it for luxury/business/family; for others, preference_coverage on cabin/stops penalizes it | ✅ luxury seed=0: gate=0, total=-0.025 |
+| Highest-rated hotel | book tool rejects if over cap (env-side); if it fits, budget_efficiency zeros past high_ratio | ✅ seed=42: gate=0, budget=0, total=-0.025 |
+| Finish in one step (submit immediately) | gate=0 with empty itinerary; reward=0 - step penalty | ✅ total=0 with steps=3 |
+| Ignore disruptions | recovery=0 + coherence fails (now missing a flight leg) + gate fails (incomplete) | structurally — triple penalty by construction |
+| Spam search | world.py search idempotence + step_penalty growth | structural |
+| Book and unbook in a loop | tentative is free, unbooking refunds — but final state is what counts; turns burn step_penalty | structural |
+| Submit empty | gate=0, reward=0 minus step_penalty | ✅ verified |
+
+### what we deliberately did NOT do
+
+- **Did not blend the LLM judge into the training reward.** Logged separately in eval. The headline diagnostic is `corr(rule_reward, judge_score)`. Low corr → blind spot. High corr → good proxy. This is the more interesting result either way.
+- **Did not normalize the persona's soft_prefs weights to sum to 1.** They're already normalized in persona.py for activity weights; mixing them with hotel_stars / flight_cabin scoring (different "weight" semantics) gets messy. Each contribution carries its own scaling.
+- **Did not make coherence binary 0/1**, despite the plan saying so. Partial credit (fraction of 5 checks passing) is fairer to "mostly right" itineraries and produces a smoother training signal.
+
+### budget bell math
+
+```
+ratio = spent / cap
+midpoint = (low_ratio + high_ratio) / 2
+half_width = (high_ratio - low_ratio) / 2
+distance = (ratio - midpoint) / half_width
+score = max(0, 1 - distance²)
+```
+
+So at default tolerances (0.55, 0.95): peak at 0.75, score = 0.75 at ratio ≈ 0.85, score = 0.0 at ratio ≤ 0.55 or ≥ 0.95. Quadratic so penalties are gentle near the peak and steep near the bounds.
+
+### things worth a /reward-shaping analysis later
+
+- Vary `(preference, budget, coherence, recovery)` weights on a grid; plot how baseline rewards shift. README enhancement #1.
+- Sensitivity of total reward to `budget_low/high_ratio` (persona archetype tightening).
+- Compare `corr(rule, judge)` across personas — is the rule-based proxy archetype-fair?
 
 ## eval
 
