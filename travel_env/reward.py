@@ -470,6 +470,9 @@ def compose(
     """Combine components into a scalar reward + a small extras dict."""
     if recovery is None:
         # Renormalize the three remaining weights so the soft sum still spans [0, 1].
+        # Without this, no-disruption episodes would systematically score ~25% lower
+        # for "lucking out" (no disruption fired) — which would be perverse: the
+        # agent that doesn't face a disruption shouldn't be penalized for it.
         wp, wb, wc = weights.preference, weights.budget, weights.coherence
         total_w = wp + wb + wc
         if total_w <= 0:

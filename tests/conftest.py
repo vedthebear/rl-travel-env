@@ -12,6 +12,9 @@ import os
 import pytest
 
 
+# autouse=True means pytest runs this fixture once per session without any
+# test explicitly requesting it. So the function looks unused but isn't —
+# it's how we guarantee no test ever hits the OpenRouter API.
 @pytest.fixture(autouse=True, scope="session")
 def _no_llm_calls():
     """Hard-disable the LLM persona path for the whole test session."""

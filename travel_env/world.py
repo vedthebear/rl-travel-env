@@ -149,7 +149,14 @@ def _cache_key(tool: str, args: dict) -> str:
 
 def _seeded_rng_for(world: World, *parts: Any) -> np.random.Generator:
     """Derive a sub-RNG from the world seed + a key. Used so cached searches
-    don't depend on global RNG draw order between unrelated calls."""
+    don't depend on global RNG draw order between unrelated calls.
+
+    Why this matters: if every search just consumed from world.rng directly,
+    `search_flights(JFK, NRT)` followed by `search_hotels(Tokyo)` would
+    return different results than the reverse order — even though neither
+    depends on the other. With a sub-RNG keyed by (world_salt, search_args),
+    each search is reproducible in isolation and idempotent under reordering.
+    """
     # Mix world's RNG state into the key so different seeds give different sub-streams.
     # We extract one int from world.rng's bit_generator state for stable per-world salt.
     state = world.rng.bit_generator.state
@@ -584,6 +591,10 @@ def maybe_schedule_disruption(
     """After booking a flight, roll for cancellation; if hit, schedule the event."""
     world.booked_flight_ids.add(flight.id)
 
+    # Real-world pattern: early-morning flights and connections cancel more often
+    # (weather cascades, missed crew handoffs). Encoding this asymmetry gives the
+    # agent a reason to weigh cancellation risk against price *during initial
+    # booking* — not just react after the fact.
     depart_hour = int(flight.depart_iso[11:13])
     early_morning = depart_hour < 7
     p = base_cancel_rate
