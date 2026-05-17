@@ -1,28 +1,63 @@
 # AfterQuery — AI Travel Agent RL Environment
 
-An RL training environment for an LLM-based AI travel agent. A deterministic synthetic world (`world.py`) is populated with personas whose preferences are structured data but whose voices are LLM-generated (`persona.py`). A Gymnasium-style state machine (`env.py`) exposes an 11-tool action space the agent uses to search inventory, compose an itinerary, propose, react to feedback, and handle a mid-trip disruption. Episodes are scored by composable rule-based rewards (`reward.py`) with an optional LLM judge as a diagnostic — never as the training signal. Three baselines (`baselines.py`) plus an LLM rollout (`rollout.py`) run through an evaluation harness (`eval.py`) that reports per-component reward decompositions. A test suite (`tests/`, 88 tests, 0.3s, no network) covers the load-bearing invariants. A live terminal visualization (`viz.py`) renders one baseline's episode in real time.
+An RL training environment for an LLM-based AI travel agent. A deterministic synthetic world (`world.py`) is populated with personas whose preferences are structured data but whose voices are LLM-generated (`persona.py`). (This mimics real-world interactions and different interaction styles, without relying on entirely LLM-generated personas). A Gymnasium-style state machine (`env.py`) exposes an 11-tool action space the agent uses to search inventory, compose an itinerary, propose, react to feedback, and handle a mid-trip disruption. (All simple python functions)! Episodes are scored by composable rule-based rewards (`reward.py`) with an optional LLM judge as a diagnostic — never as the training signal. Three baselines (`baselines.py`) plus an LLM rollout (`rollout.py`) run through an evaluation harness (`eval.py`) that reports per-component reward decompositions. A test suite (`tests/`, 88 tests, 0.3s, no network) covers the load-bearing invariants. A live terminal visualization (`viz.py`) renders one baseline's episode in real time.
 
 ---
 
 ## Quick start
 
+### Setup (one-time)
+
 ```bash
 uv sync --extra dev
 
-# Smoke test — three baselines on one seed, render the trajectories
-uv run python eval.py --episodes 1 --seed 42 --render
+# Optional: drop your OpenRouter key in .env so the LLM scripts pick it up.
+echo "OPENROUTER_API_KEY=sk-or-..." > .env
+```
 
-# Fuller pass — 50 episodes per baseline, scripted persona, no API key needed
+The scripts below call `.venv/bin/python` directly and source `.env` themselves, so you don't need to remember either step at the call site.
+
+### Live demos
+
+Six rich-terminal dashboards, trivial → complex. Each script auto-loads `.env` and gracefully skips itself if the API key isn't set.
+
+```bash
+bash scripts/viz_01_help.sh                  # CLI sanity (instant)
+bash scripts/viz_02_random_fast.sh           # panels-draw test (instant)
+bash scripts/viz_03_cheapest.sh              # ~8 turns, watchable
+bash scripts/viz_04_heuristic_disruption.sh  # flight cancel + rebook visualized
+bash scripts/viz_05_heuristic_llm_persona.sh # LLM-voiced client request
+bash scripts/viz_06_llm_agent.sh             # LLM drives the agent itself
+```
+
+### End-to-end verification
+
+Eight graduated tests, simple → complex. `test_all.sh` runs them in order and stops on first failure.
+
+```bash
+bash scripts/test_all.sh --skip-llm   # L0-L4, no API key needed (~2s)
+bash scripts/test_all.sh              # all 8 levels (adds L5-L7 LLM round-trips)
+```
+
+Individual levels (`test_00_imports.sh` … `test_07_llm_judge.sh`) are runnable standalone if you want to drill into one.
+
+### Manual commands
+
+For when you want more control than the scripts give:
+
+```bash
+set -a && . ./.env && set +a   # load OPENROUTER_API_KEY into the shell
+
+# Three baselines × 50 seeds, scripted persona, no API key needed
 uv run python eval.py --episodes 50 --seed 42 --baselines random,cheapest,heuristic
 
-# With OpenRouter (persona LLM + judge)
-export OPENROUTER_API_KEY=...
+# LLM-voiced persona + judge correlation diagnostic
 uv run python eval.py --episodes 20 --seed 42 --persona-mode llm --llm-judge
 
-# Live dashboard for one episode
-uv run python viz.py --seed 42 --baseline heuristic --turn-delay 0.4
+# LLM agent driving the live rich dashboard
+uv run python viz.py --baseline llm --seed 42 --turn-delay 0.2
 
-# Tests
+# Pytest directly (88 tests, ~0.3s, no network)
 uv run pytest tests/
 ```
 
@@ -35,9 +70,7 @@ The README that came with this take-home called reward design "the hardest part"
 We made three early interpretive calls:
 
 1. **This is an LLM-agent RL env**, not a classical RL gridworld. AfterQuery's agents are language models that act via tool calls. So the action space is JSON tool calls (`{"tool": "...", "args": {...}}`) and the observation is structured JSON, not a fixed-shape tensor. We mimic the Gymnasium API for portability but don't import `gymnasium`: `Box`/`Discrete`/`Dict` are a poor fit for variable-length text and structured inventory.
-
 2. **Synthetic world, no APIs.** The take-home explicitly forbids starter data and the README's line "a flat data distribution produces a flat agent" was the deepest design hint. We took that to mean the *shape* of the distribution is what we should engineer — to surface specific competencies (tradeoff reasoning, geographic coherence, scarcity handling, disruption recovery) — not just sample uniformly and hope for the best. Real APIs would actually hurt this goal: they kill reproducibility and we'd lose control of the distribution.
-
 3. **Reward design is more about defending the exploits than enumerating the components.** Anyone can list "preference, budget, coherence." The interesting question is: when the agent learns to always book the cheapest flight, what in the env structurally stops that from winning? We made the defense table a first-class artifact (see below).
 
 ---
@@ -121,7 +154,6 @@ There is no `done` field in the obs — that's what `terminated` / `truncated` i
 Two artifacts at reset:
 
 1. **Structured profile** — deterministic from seed. Six archetypes (`budget`, `luxury`, `foodie`, `family`, `history_buff`, `business`), each a coherent bundle of hard constraints (budget cap, dates, group size, `no_overnight_flights`, `max_stops`, `required_amenities`), soft preferences (activity-category weights summing to 1, target `hotel_stars`, target `flight_cabin`), and tolerances (archetype-specific `budget_low_ratio` / `budget_high_ratio` for the budget bell). **Reward reads this. The agent never sees it.**
-
 2. **Natural-language request** — the LLM rewrites the profile into the persona's voice. Communication style (`terse`, `chatty`, `vague`, `precise`, `formal`) is sampled per archetype, so a budget traveler sounds like *"Hi! Hoping to do 6 days in Reykjavik from Istanbul, departing 2026-04-13. 2 of us, trying to keep it under $2,550. Mostly into history, nature. Flexible on most things — surprise me."* while a luxury one sounds like *"Good afternoon. I'd like to arrange a 6-day stay in Lisbon for 2 of us, departing 2026-04-27 from Dubai. Budget up to $16,770. Expecting a 5-star hotel and business-class flights — no red-eyes."*
 
 The separation is what lets the LLM add realism (varied tone, fuzzy phrasing) without making the *training signal* depend on stochastic LLM output. Mismatch detection on `propose_to_client` is deterministic: the env structurally computes which of the persona's preferences the proposal violates, then the LLM only *voices* those complaints in character. The persona never invents new objections that the agent can't anticipate.
@@ -132,14 +164,16 @@ LLM calls go through OpenRouter via the `openai` SDK and are cached on disk by `
 
 The most important design insight: a flat data distribution produces a flat agent. So we engineered six properties into the world, each defending against a specific lazy strategy:
 
-| Property | What it makes the agent learn |
-|---|---|
-| No dominated options in search results | Real tradeoff reasoning. Top-k flights span a Pareto frontier on (price, stops, cabin, overnight) via anti-correlated noise — sample one quality dimension to be higher and another to be lower. Verified: on the smoke route, only 2/8 results were dominated after the Pareto sweep vs 6/8 with naive price sort. |
-| Persona-aligned + misaligned options coexist | Filter and rank by preference. A foodie's `search_activities` returns food *and* history *and* nightlife — they have to specify `categories=["food"]` to get clean food results. |
-| Geography with consequences | Hotel-city, flight-route, and dates must align. The cheap Reykjavik hotel is no good if the flight is to Singapore. |
-| Uneven availability | Handle scarcity. Some routes have many flights, some few. |
-| Search idempotence (within an episode) | Prevent spam-search-to-get-lucky. Same args within an episode return identical cached results. Forces the agent to *vary* its queries to get new information. |
-| Disruption risk asymmetry | Consider risk during initial booking. Cancellation probability is `0.15 × 1.3 (if early-morning) × 1.2 (if connection)`, so risky flights are cheaper *and* more likely to cancel. |
+
+| Property                                     | What it makes the agent learn                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No dominated options in search results       | Real tradeoff reasoning. Top-k flights span a Pareto frontier on (price, stops, cabin, overnight) via anti-correlated noise — sample one quality dimension to be higher and another to be lower. Verified: on the smoke route, only 2/8 results were dominated after the Pareto sweep vs 6/8 with naive price sort. |
+| Persona-aligned + misaligned options coexist | Filter and rank by preference. A foodie's `search_activities` returns food *and* history *and* nightlife — they have to specify `categories=["food"]` to get clean food results.                                                                                                                                    |
+| Geography with consequences                  | Hotel-city, flight-route, and dates must align. The cheap Reykjavik hotel is no good if the flight is to Singapore.                                                                                                                                                                                                 |
+| Uneven availability                          | Handle scarcity. Some routes have many flights, some few.                                                                                                                                                                                                                                                           |
+| Search idempotence (within an episode)       | Prevent spam-search-to-get-lucky. Same args within an episode return identical cached results. Forces the agent to *vary* its queries to get new information.                                                                                                                                                       |
+| Disruption risk asymmetry                    | Consider risk during initial booking. Cancellation probability is `0.15 × 1.3 (if early-morning) × 1.2 (if connection)`, so risky flights are cheaper *and* more likely to cancel.                                                                                                                                  |
+
 
 The world is hardcoded to 23 real cities (Tokyo, Paris, NYC, Bangkok, Reykjavik, Berlin, Marrakech, Buenos Aires, …), each with IATA code, lat/lon, 4–5 real neighborhood names (Shibuya, Le Marais, SoHo, etc.), and a cost multiplier anchored to real cost-of-living (Tokyo ≈ 1.30, Bangkok ≈ 0.50). Inventory is then procedurally generated:
 
@@ -149,7 +183,7 @@ The world is hardcoded to 23 real cities (Tokyo, Paris, NYC, Bangkok, Reykjavik,
 
 Constants are calibrated so a Tokyo 4-star night is ~$250 and an SFO–NRT economy round-trip is ~$700, which means a $40k trip looks absurd and a $1k trip looks tight. The agent's budget actually means something.
 
-All randomness flows through a per-episode `numpy.random.Generator` derived from the world seed — never `np.random.*` directly. Identical seed → byte-identical world. Item IDs are stable hashes of the search arguments, so the same flight has the same ID across redundant searches.
+All randomness flows through a per-episode `numpy.random.Generator` derived from the world seed — never `np.random.`* directly. Identical seed → byte-identical world. Item IDs are stable hashes of the search arguments, so the same flight has the same ID across redundant searches.
 
 ### Reward: sparse terminal, multiplicative gate, additive soft sum
 
@@ -159,14 +193,16 @@ total = hard_constraint_gate × Σᵢ (wᵢ · component_i)  −  step_penalty
 
 Components (all bounded `[0, 1]` except step_penalty):
 
-| Component | Behavior |
-|---|---|
+
+| Component              | Behavior                                                                                                                                                                                                                                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hard_constraint_gate` | `{0, 1}` multiplicative. Budget honored ∧ structurally complete (≥1 booked hotel, ≥1 outbound + ≥1 return flight on the right routes) ∧ `no_overnight_flights` respected ∧ `max_stops` respected ∧ `required_amenities` present on all booked hotels. **Failing it zeros the soft sum.** |
-| `preference_coverage` | Weighted score across persona soft prefs. Activity categories (linear up to 2 in-category items — two beats one, two beats four), `hotel_stars` (tolerance-aware distance), `flight_cabin` (rank distance), `flight_max_stops` (decay above target). |
-| `budget_efficiency` | Concave bell over `spent / cap`. **Tolerances are persona-supplied** — `budget_low_ratio` and `budget_high_ratio` from `profile.tolerances`. Peaks at midpoint, zero at the bounds. Budget archetypes peak around 0.6 of cap; luxury peaks near 0.9. |
-| `coherence` | Partial credit (not 0/1) over 5 structural checks: outbound route, return route, hotels in dest, activities in dest, dates aligned. Smoother training signal than binary. |
-| `recovery_quality` | `[0, 1]` or `None`. Conditional on a disruption firing. `0.4 × price_efficiency + 0.4 × time_efficiency + 0.2 × downstream_preservation`. Never rebooking = 0. |
-| `step_penalty` | `0.005 × max(0, steps − 5)`. Free first 5 turns; then linear. So 10 turns ≈ −0.025, 20 turns ≈ −0.075, 40 turns ≈ −0.175. |
+| `preference_coverage`  | Weighted score across persona soft prefs. Activity categories (linear up to 2 in-category items — two beats one, two beats four), `hotel_stars` (tolerance-aware distance), `flight_cabin` (rank distance), `flight_max_stops` (decay above target).                                     |
+| `budget_efficiency`    | Concave bell over `spent / cap`. **Tolerances are persona-supplied** — `budget_low_ratio` and `budget_high_ratio` from `profile.tolerances`. Peaks at midpoint, zero at the bounds. Budget archetypes peak around 0.6 of cap; luxury peaks near 0.9.                                     |
+| `coherence`            | Partial credit (not 0/1) over 5 structural checks: outbound route, return route, hotels in dest, activities in dest, dates aligned. Smoother training signal than binary.                                                                                                                |
+| `recovery_quality`     | `[0, 1]` or `None`. Conditional on a disruption firing. `0.4 × price_efficiency + 0.4 × time_efficiency + 0.2 × downstream_preservation`. Never rebooking = 0.                                                                                                                           |
+| `step_penalty`         | `0.005 × max(0, steps − 5)`. Free first 5 turns; then linear. So 10 turns ≈ −0.025, 20 turns ≈ −0.075, 40 turns ≈ −0.175.                                                                                                                                                                |
+
 
 **Dynamic weight renormalization.** Without a disruption, `recovery_quality` is `None` and the remaining three weights are renormalized to sum to 1. Otherwise no-disruption episodes would systematically score 25% lower for "lucking out" — perverse.
 
@@ -184,15 +220,17 @@ The judge sees only `(request_text, final_itinerary)` — it does not see the st
 
 This is the table the README begged us to write.
 
-| Exploit | Structural defense | Verified |
-|---|---|---|
-| **Always cheapest flight** (multi-stop overnight) | `hard.no_overnight_flights` + `hard.max_stops` gates kill it for luxury/business/family personas. For others, `preference_coverage` on `flight_cabin` / `flight_max_stops` penalizes it. Cheapest flights also tend to be multi-stop early-morning, which have the highest cancellation probability. | ✅ luxury seed=0: gate=0, total=−0.025 |
-| **Highest-rated hotel** (5-star always) | `book` rejects if spend would exceed cap (env-side). If it fits, `budget_efficiency` zeros past `high_ratio`. | ✅ seed=42: gate=0, budget=0, total=−0.025 |
-| **Finish in one step** (submit immediately) | Reward only emitted at `submit_final`. Empty itinerary → gate=0 → reward=0 minus step penalty. | ✅ total=0 with steps=3 |
-| **Ignore disruptions** | Triple penalty by construction: `recovery_quality=0` + `coherence` fails (now missing a flight leg) + `hard_constraint_gate` fails (incomplete itinerary). | structural |
-| **Spam search to get lucky** | Search idempotence in `world.py` (same args in the same episode return the same cached results) + step_penalty growth. | structural |
-| **Book and unbook in a loop** | Tentative is free, unbooking refunds — but the *final* state is what reward scores. Loops burn step_penalty. | structural |
-| **Game the LLM judge** | Judge is never the training signal. | structural |
+
+| Exploit                                           | Structural defense                                                                                                                                                                                                                                                                                   | Verified                                  |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Always cheapest flight** (multi-stop overnight) | `hard.no_overnight_flights` + `hard.max_stops` gates kill it for luxury/business/family personas. For others, `preference_coverage` on `flight_cabin` / `flight_max_stops` penalizes it. Cheapest flights also tend to be multi-stop early-morning, which have the highest cancellation probability. | ✅ luxury seed=0: gate=0, total=−0.025     |
+| **Highest-rated hotel** (5-star always)           | `book` rejects if spend would exceed cap (env-side). If it fits, `budget_efficiency` zeros past `high_ratio`.                                                                                                                                                                                        | ✅ seed=42: gate=0, budget=0, total=−0.025 |
+| **Finish in one step** (submit immediately)       | Reward only emitted at `submit_final`. Empty itinerary → gate=0 → reward=0 minus step penalty.                                                                                                                                                                                                       | ✅ total=0 with steps=3                    |
+| **Ignore disruptions**                            | Triple penalty by construction: `recovery_quality=0` + `coherence` fails (now missing a flight leg) + `hard_constraint_gate` fails (incomplete itinerary).                                                                                                                                           | structural                                |
+| **Spam search to get lucky**                      | Search idempotence in `world.py` (same args in the same episode return the same cached results) + step_penalty growth.                                                                                                                                                                               | structural                                |
+| **Book and unbook in a loop**                     | Tentative is free, unbooking refunds — but the *final* state is what reward scores. Loops burn step_penalty.                                                                                                                                                                                         | structural                                |
+| **Game the LLM judge**                            | Judge is never the training signal.                                                                                                                                                                                                                                                                  | structural                                |
+
 
 ---
 
@@ -249,7 +287,7 @@ Roughly in priority order:
 - **Multi-city itineraries**. Adds inter-city travel decisions and multi-hotel logistics. Real scope creep — would touch every module but cleanly.
 - **Plumb `profile` through to the heuristic baseline.** Right now `eval.py` only passes `rng`, so the heuristic can't use soft preferences in selection — it falls back to "cheapest among hard-feasible." This is the bigger lever for widening the heuristic-over-cheapest gap. We deliberately kept the interface clean for the take-home submission, but the small change is straightforward.
 - **Formal reward-shaping grid**. Vary `(preference, budget, coherence, recovery)` weights on a 4×4×4×4 grid; plot how baseline rewards shift. This is the README's #1 enhancement and a natural follow-up.
-- **`corr(rule, judge)` analysis across personas** — is the rule-based proxy archetype-fair? Foodies might score systematically high on our proxy but low with the judge if our activity-category weights don't match human intuition.
+- `**corr(rule, judge)` analysis across personas** — is the rule-based proxy archetype-fair? Foodies might score systematically high on our proxy but low with the judge if our activity-category weights don't match human intuition.
 - **Group-of-N persona dynamics** (multiple travelers with conflicting preferences). A meaningful complication of the soft-pref scoring.
 - **LLM persona reactions throughout the episode**, not just at `propose_to_client`. Right now the persona is silent between proposals; richer mid-trip dialog would make the env feel more like real client work.
 

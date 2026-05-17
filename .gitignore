@@ -22,3 +22,7 @@ runs/
 
 # Env
 .env
+
+# Internal scratch — not part of the submission
+plan.md
+notes.md
