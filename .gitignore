@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# uv
+.uv-cache/
+
+# Persona LLM cache (regenerated on demand; reproducible across runs)
+.persona_cache/
+
+# Eval outputs
+runs/
+*.jsonl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Env
+.env

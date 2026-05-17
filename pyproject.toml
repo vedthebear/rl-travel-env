@@ -1,0 +1,22 @@
+[project]
+name = "travel-env"
+version = "0.1.0"
+description = "RL training environment for an LLM-based AI travel agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["travel_env"]
