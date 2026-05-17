@@ -31,6 +31,7 @@ from rich.text import Text
 
 from travel_env.baselines import cheapest_policy, heuristic_policy, random_policy
 from travel_env.env import TravelEnv
+from travel_env.persona import sample_profile
 
 
 # --- Per-status color so the eye tracks transitions ----------------------
@@ -225,11 +226,14 @@ def _compose(seed: int, obs: dict, info: dict, last_action: dict | None,
 # --- Driver --------------------------------------------------------------
 
 _POLICY_FACTORY = {
-    "random":    lambda seed: (lambda o, rng=np.random.default_rng(seed):
-                               random_policy(o, rng=rng)),
-    "cheapest":  lambda seed: (lambda o: cheapest_policy(o)),
-    "heuristic": lambda seed: (lambda o, rng=np.random.default_rng(seed):
-                               heuristic_policy(o, rng=rng)),
+    "random":    lambda seed: (lambda o, rng=np.random.default_rng(seed),
+                               p=sample_profile(seed):
+                               random_policy(o, rng=rng, profile=p)),
+    "cheapest":  lambda seed: (lambda o, p=sample_profile(seed):
+                               cheapest_policy(o, profile=p)),
+    "heuristic": lambda seed: (lambda o, rng=np.random.default_rng(seed),
+                               p=sample_profile(seed):
+                               heuristic_policy(o, rng=rng, profile=p)),
 }
 
 

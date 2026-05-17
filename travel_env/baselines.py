@@ -131,6 +131,7 @@ def _flow_action(
     clock = state.get("clock", {}) or {}
     last_result = obs.get("last_result") or {}
     history = obs.get("history", []) or []
+    budget = state.get("budget", {}) or {}
 
     cancelled = [s for s in itinerary if s.get("status") == "cancelled"]
     tentative = [s for s in itinerary if s.get("status") == "tentative"]
@@ -138,6 +139,50 @@ def _flow_action(
     booked_flights = [s for s in booked if _kind(s) == "flight"]
     booked_hotels = [s for s in booked if _kind(s) == "hotel"]
     booked_activities = [s for s in booked if _kind(s) == "activity"]
+
+    # Budget context: shared with _need_slot so it can pre-filter searches
+    # by remaining cap. Avoids the "always pick the cheapest of top-k where
+    # top-k is ranked by stars/dollar, not absolute price" failure mode.
+    budget_ctx = {
+        "cap": float(budget.get("cap", 0) or 0),
+        "spent": float(budget.get("spent", 0) or 0),
+        "tentative": tentative,
+    }
+
+    # Bail-out: too many recent book failures or empty searches means the
+    # current itinerary is structurally infeasible. Submit and let the gate
+    # fail — better than burning turns to truncation.
+    recent_book_fails = sum(
+        1 for h in history[-5:]
+        if (h.get("action") or {}).get("tool") == "book"
+        and (h.get("result") or {}).get("ok") is False
+    )
+    recent_empty_searches = sum(
+        1 for h in history[-5:]
+        if str((h.get("action") or {}).get("tool", "")).startswith("search_")
+        and (h.get("result") or {}).get("count") == 0
+    )
+    if recent_book_fails >= 2 or recent_empty_searches >= 2:
+        return {"tool": "submit_final", "args": {}}
+
+    # If the previous turn was a failed book, remove the most-expensive
+    # tentative item before re-entering the build/book loop. The state
+    # machine will re-search for that slot with a tighter max_price next turn.
+    last_h = history[-1] if history else None
+    last_book_failed = (
+        last_h is not None
+        and (last_h.get("action") or {}).get("tool") == "book"
+        and (last_h.get("result") or {}).get("ok") is False
+        and tentative
+    )
+    if last_book_failed:
+        # Skip rebook-tentatives (they're emergency replacements; removing
+        # them just re-triggers the disruption recovery flow).
+        candidates = [t for t in tentative
+                      if not str(t.get("slot", "")).endswith("_rebook")]
+        if candidates:
+            most_exp = max(candidates, key=lambda t: float(t.get("price", 0)))
+            return {"tool": "remove_from_itinerary", "args": {"slot": most_exp["slot"]}}
 
     # Trip params: prefer profile if eval/caller passed one, otherwise read from
     # obs (env exposes origin/dest in clock so policies don't need profile).
@@ -178,7 +223,7 @@ def _flow_action(
             obs, slot="outbound_flight", kind="flight",
             src=origin, dst=dest, date=depart_date,
             mode=mode, profile=profile, rng=rng, last_result=last_result,
-            hard_constraints=hard_constraints,
+            hard_constraints=hard_constraints, budget_ctx=budget_ctx,
         )
 
     # 3) BUILD RETURN
@@ -187,7 +232,7 @@ def _flow_action(
             obs, slot="return_flight", kind="flight",
             src=dest, dst=origin, date=return_date,
             mode=mode, profile=profile, rng=rng, last_result=last_result,
-            hard_constraints=hard_constraints,
+            hard_constraints=hard_constraints, budget_ctx=budget_ctx,
         )
 
     # 4) BUILD HOTEL
@@ -196,7 +241,7 @@ def _flow_action(
             obs, slot="hotel", kind="hotel",
             src=dest, dst=dest, date=depart_date,
             mode=mode, profile=profile, rng=rng, last_result=last_result,
-            hard_constraints=hard_constraints,
+            hard_constraints=hard_constraints, budget_ctx=budget_ctx,
         )
 
     # 5) BOOK BASE TRIP — anything tentative gets committed in bulk
@@ -211,7 +256,7 @@ def _flow_action(
             obs, slot=slot_name, kind="activity",
             src=dest, dst=dest, date=depart_date,
             mode=mode, profile=profile, rng=rng, last_result=last_result,
-            hard_constraints=hard_constraints,
+            hard_constraints=hard_constraints, budget_ctx=budget_ctx,
         )
 
     # 7) PROPOSE (heuristic only — once per episode)
@@ -232,6 +277,7 @@ def _need_slot(
     mode: str, profile: PersonaProfile | None,
     rng: np.random.Generator | None, last_result: dict,
     hard_constraints: dict | None = None,
+    budget_ctx: dict | None = None,
 ) -> dict:
     """If we just searched for this kind/route, pick from results; else search."""
     results = _results_matching(last_result, kind, src, dst)
@@ -247,11 +293,24 @@ def _need_slot(
     # Emit a search. Push known hard constraints into the search args so we get
     # pre-filtered results (server-side filter is more efficient + smaller token
     # bill in the LLM rollout case).
+    #
+    # If the immediately-previous search of this same kind returned 0 results,
+    # broaden the search by dropping max_price (and min_stars for hotels). The
+    # filter was too aggressive; better to surface options that fail soft prefs
+    # than to spin on zero-result retries until the bail-out fires.
     hc = hard_constraints or {}
+    prev_empty_same_kind = (
+        last_result.get("tool") == f"search_{kind}"
+        and last_result.get("count") == 0
+    )
+    max_price = None if prev_empty_same_kind else _slot_max_price(kind, slot, budget_ctx, obs)
+
     if kind == "flight":
         args: dict[str, Any] = {"origin": src, "dest": dst, "depart_date": date}
         if hc.get("max_stops") is not None:
             args["max_stops"] = hc["max_stops"]
+        if max_price is not None:
+            args["max_price"] = max_price
         return {"tool": "search_flights", "args": args}
 
     if kind == "hotel":
@@ -261,12 +320,14 @@ def _need_slot(
             "checkin": clock["depart_date"],
             "checkout": clock["return_date"],
         }
-        if mode == "heuristic" and profile:
+        if mode == "heuristic" and profile and not prev_empty_same_kind:
             target_stars = (profile.soft_prefs or {}).get("hotel_stars", 3)
             try:
                 args["min_stars"] = max(1, int(target_stars) - 1)
             except (TypeError, ValueError):
                 pass
+        if max_price is not None:
+            args["max_price"] = max_price
         return {"tool": "search_hotels", "args": args}
 
     if kind == "activity":
@@ -276,10 +337,68 @@ def _need_slot(
             top_cats = _top_activity_categories(soft, k=2)
             if top_cats:
                 args["categories"] = top_cats
+        if max_price is not None:
+            args["max_price"] = max_price
         return {"tool": "search_activities", "args": args}
 
     # Shouldn't reach.
     return {"tool": "submit_final", "args": {}}
+
+
+def _slot_max_price(
+    kind: str, slot: str, budget_ctx: dict | None, obs: dict,
+) -> float | None:
+    """Per-slot price ceiling derived from remaining budget.
+
+    Allocation (rough): flights ~40% of cap split across two legs, hotel
+    ~50%, activities ~10%. We subtract already-tentative items from
+    "remaining" so a return-flight search shrinks if the outbound has
+    been added; same idea for the hotel after both flights are tentative.
+
+    Returns None when budget is unknown (so callers omit the filter and
+    fall back to the broader top-k).
+    """
+    if not budget_ctx:
+        return None
+    cap = float(budget_ctx.get("cap", 0) or 0)
+    if cap <= 0:
+        return None
+    spent = float(budget_ctx.get("spent", 0) or 0)
+    tentative = budget_ctx.get("tentative") or []
+    other_tentative = sum(
+        float(t.get("price", 0) or 0) for t in tentative
+        if t.get("slot") != slot
+    )
+    remaining = max(0.0, cap - spent - other_tentative)
+    if remaining <= 0:
+        return None
+
+    if kind == "flight":
+        # Need room for the *other* flight too. Bias toward the lower half.
+        return round(remaining * 0.55, 2)
+
+    if kind == "hotel":
+        nights = _nights_in_obs(obs)
+        return round(remaining * 0.95 / max(1, nights), 2)
+
+    if kind == "activity":
+        # One activity at a time; cap at remaining * 0.25 so we leave room
+        # for further activities.
+        return round(min(remaining * 0.25, 250.0), 2)
+
+    return None
+
+
+def _nights_in_obs(obs: dict) -> int:
+    """Best-effort nights count from the clock dates."""
+    clock = (obs.get("state") or {}).get("clock") or {}
+    try:
+        from datetime import date as _date
+        a = _date.fromisoformat(str(clock.get("depart_date", "")))
+        b = _date.fromisoformat(str(clock.get("return_date", "")))
+        return max(1, (b - a).days)
+    except (ValueError, TypeError):
+        return 1
 
 
 def _rebook_action(

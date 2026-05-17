@@ -35,6 +35,7 @@ import numpy as np
 
 from travel_env.baselines import cheapest_policy, heuristic_policy, random_policy
 from travel_env.env import TravelEnv
+from travel_env.persona import sample_profile
 from travel_env.reward import DEFAULT_WEIGHTS, llm_judge_score
 
 
@@ -120,15 +121,26 @@ def _drive_policy(
     seed: int,
 ) -> tuple[dict, dict, list[dict], dict]:
     """Drive env with a step-level policy until terminated/truncated."""
-    accepts_rng = "rng" in inspect.signature(policy).parameters
+    params = inspect.signature(policy).parameters
+    accepts_rng = "rng" in params
+    accepts_profile = "profile" in params
+
     rng = np.random.default_rng(seed)
     obs, reset_info = env.reset(seed=seed)
+    # Baselines (especially heuristic) take a PersonaProfile to read soft prefs.
+    # sample_profile is deterministic so this matches what the env sampled.
+    profile = sample_profile(seed) if accepts_profile else None
 
     trajectory: list[dict] = []
     step_info: dict = {}
     terminated = truncated = False
     while not (terminated or truncated):
-        action = policy(obs, rng=rng) if accepts_rng else policy(obs)
+        kwargs: dict[str, Any] = {}
+        if accepts_rng:
+            kwargs["rng"] = rng
+        if accepts_profile:
+            kwargs["profile"] = profile
+        action = policy(obs, **kwargs)
         obs, _reward, terminated, truncated, step_info = env.step(action)
         last = obs.get("last_result") or {}
         trajectory.append({
@@ -137,7 +149,6 @@ def _drive_policy(
             "ok": last.get("ok") if isinstance(last, dict) else None,
         })
     breakdown = step_info.get("reward_breakdown") or {}
-    # Episode-level info (archetype, weights, seed) lives in reset_info; merge.
     return breakdown, obs, trajectory, {**reset_info, **step_info}
 
 

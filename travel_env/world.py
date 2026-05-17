@@ -2,6 +2,11 @@
 
 All sampling is deterministic given the episode seed via numpy.random.Generator.
 Real city names give the reviewer something concrete; inventory is fully synthetic.
+
+Static data (the city table, airlines, hotel naming, activity anchors, etc.)
+lives in travel_env.world_data so this module stays focused on generation and
+search logic. CITIES is re-exported from this module — `from travel_env.world
+import CITIES` (used by persona.py and reward.py) keeps working unchanged.
 """
 
 from __future__ import annotations
@@ -13,101 +18,17 @@ from typing import Any, Literal
 
 import numpy as np
 
-
-# --- Static city table (hardcoded, ~15 cities) ----------------------------
-
-@dataclass(frozen=True)
-class City:
-    name: str
-    iata: str
-    lat: float
-    lon: float
-    neighborhoods: tuple[str, ...]
-    cost_multiplier: float  # 1.0 = baseline; Tokyo/NYC > 1, Bangkok < 1
-
-
-CITIES: dict[str, City] = {
-    "Tokyo": City(
-        "Tokyo", "NRT", 35.7720, 140.3929,
-        ("Shibuya", "Shinjuku", "Ginza", "Asakusa", "Roppongi"),
-        1.30,
-    ),
-    "Paris": City(
-        "Paris", "CDG", 49.0097, 2.5479,
-        ("Le Marais", "Saint-Germain", "Montmartre", "Latin Quarter", "Pigalle"),
-        1.20,
-    ),
-    "New York": City(
-        "New York", "JFK", 40.6413, -73.7781,
-        ("SoHo", "Midtown", "Williamsburg", "Upper East Side", "Harlem"),
-        1.40,
-    ),
-    "London": City(
-        "London", "LHR", 51.4700, -0.4543,
-        ("Soho", "Shoreditch", "Camden", "Notting Hill", "Mayfair"),
-        1.30,
-    ),
-    "Bangkok": City(
-        "Bangkok", "BKK", 13.6900, 100.7501,
-        ("Sukhumvit", "Silom", "Khao San", "Chinatown", "Thonglor"),
-        0.50,
-    ),
-    "Rome": City(
-        "Rome", "FCO", 41.8003, 12.2389,
-        ("Trastevere", "Centro Storico", "Monti", "Testaccio", "Prati"),
-        1.05,
-    ),
-    "Barcelona": City(
-        "Barcelona", "BCN", 41.2974, 2.0833,
-        ("El Born", "Gracia", "Barceloneta", "Eixample", "Gothic Quarter"),
-        1.00,
-    ),
-    "Sydney": City(
-        "Sydney", "SYD", -33.9399, 151.1753,
-        ("Bondi", "Surry Hills", "Newtown", "The Rocks", "Manly"),
-        1.20,
-    ),
-    "Lisbon": City(
-        "Lisbon", "LIS", 38.7813, -9.1359,
-        ("Alfama", "Bairro Alto", "Chiado", "Belem", "Principe Real"),
-        0.85,
-    ),
-    "Reykjavik": City(
-        "Reykjavik", "KEF", 63.9850, -22.6056,
-        ("Laugavegur", "Old Harbour", "Vesturbaer", "Hlemmur"),
-        1.45,
-    ),
-    "Mexico City": City(
-        "Mexico City", "MEX", 19.4361, -99.0719,
-        ("Roma Norte", "Condesa", "Polanco", "Coyoacan", "Centro"),
-        0.60,
-    ),
-    "Cape Town": City(
-        "Cape Town", "CPT", -33.9690, 18.6017,
-        ("City Bowl", "Sea Point", "Camps Bay", "Woodstock", "V&A Waterfront"),
-        0.70,
-    ),
-    "Istanbul": City(
-        "Istanbul", "IST", 41.2753, 28.7519,
-        ("Beyoglu", "Sultanahmet", "Kadikoy", "Karakoy", "Besiktas"),
-        0.65,
-    ),
-    "Vancouver": City(
-        "Vancouver", "YVR", 49.1967, -123.1815,
-        ("Gastown", "Yaletown", "Kitsilano", "Mount Pleasant", "Commercial Drive"),
-        1.15,
-    ),
-    "Singapore": City(
-        "Singapore", "SIN", 1.3644, 103.9915,
-        ("Tiong Bahru", "Chinatown", "Kampong Glam", "Orchard", "Tanjong Pagar"),
-        1.25,
-    ),
-    "San Francisco": City(
-        "San Francisco", "SFO", 37.6213, -122.3790,
-        ("Mission", "SoMa", "Hayes Valley", "North Beach", "Castro"),
-        1.45,
-    ),
-}
+from travel_env.world_data import (
+    AIRLINES,
+    CATEGORY_BASE,
+    CATEGORY_DUR,
+    CITIES,
+    City,
+    HOTEL_PREFIXES_BY_TIER,
+    HOTEL_SUFFIXES_BY_TIER,
+    NAMED_ACTIVITIES,
+    TIER_AMENITIES,
+)
 
 
 # IATA -> city-name index, for routes specified as IATA codes.
@@ -194,12 +115,6 @@ def make_world(seed: int) -> World:
 
 
 # --- Internal helpers -----------------------------------------------------
-
-_AIRLINES = (
-    "Aeris", "BlueArc", "Cirrus", "Delta-Star", "Equinox",
-    "Falcon", "Globe", "Helix", "Iris", "Junction",
-)
-
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
@@ -358,7 +273,7 @@ def search_flights(
         )
         price = max(50.0, round(price, 2))
 
-        airline = _AIRLINES[int(rng.integers(0, len(_AIRLINES)))]
+        airline = AIRLINES[int(rng.integers(0, len(AIRLINES)))]
         flight_no = int(rng.integers(100, 9999))
 
         depart_iso = f"{depart_date}T{depart_hour:02d}:{depart_minute:02d}"
@@ -430,24 +345,6 @@ def search_flights(
 
 # --- Hotels ---------------------------------------------------------------
 
-_HOTEL_PREFIXES = (
-    "Grand", "Royal", "Park", "Plaza", "Garden", "Sky", "Harbor",
-    "Central", "Old Town", "Imperial", "Velvet", "Lantern",
-)
-_HOTEL_SUFFIXES = (
-    "Hotel", "Inn", "Suites", "Lodge", "House", "Residences",
-)
-
-
-_TIER_AMENITIES = {
-    5: ("wifi", "gym", "breakfast", "pool", "spa", "concierge"),
-    4: ("wifi", "gym", "breakfast", "pool"),
-    3: ("wifi", "breakfast"),
-    2: ("wifi",),
-    1: (),
-}
-
-
 def _build_hotel_pool(world: World, city_name: str, city: City) -> list[Hotel]:
     rng = _seeded_rng_for(world, "hotel_pool", city.iata)
     n = int(rng.integers(25, 41))
@@ -479,14 +376,18 @@ def _build_hotel_pool(world: World, city_name: str, city: City) -> list[Hotel]:
 
         # Amenity bag: start with tier's defaults, then add a couple of randoms
         # from the next-higher tier with some probability (a 3-star with a pool exists).
-        amenities = set(_TIER_AMENITIES[stars])
+        amenities = set(TIER_AMENITIES[stars])
         if stars < 5:
-            for extra in _TIER_AMENITIES[stars + 1]:
+            for extra in TIER_AMENITIES[stars + 1]:
                 if extra not in amenities and rng.uniform() < 0.20:
                     amenities.add(extra)
 
-        prefix = _HOTEL_PREFIXES[int(rng.integers(0, len(_HOTEL_PREFIXES)))]
-        suffix = _HOTEL_SUFFIXES[int(rng.integers(0, len(_HOTEL_SUFFIXES)))]
+        # Tier-stratified naming: a 1-star is "Backpacker X Hostel"; a 5-star is
+        # "The Imperial X Residences". Keeps the vibe consistent at both ends.
+        tier_prefixes = HOTEL_PREFIXES_BY_TIER[stars]
+        tier_suffixes = HOTEL_SUFFIXES_BY_TIER[stars]
+        prefix = tier_prefixes[int(rng.integers(0, len(tier_prefixes)))]
+        suffix = tier_suffixes[int(rng.integers(0, len(tier_suffixes)))]
         name = f"{prefix} {nb} {suffix}"
 
         id_hash = _stable_hash("htl", city.iata, i, stars, nb, prefix, suffix)
@@ -549,138 +450,15 @@ def search_hotels(
 
 # --- Activities -----------------------------------------------------------
 
-_CATEGORY_BASE = {"food": 80.0, "history": 30.0, "nature": 50.0,
-                  "nightlife": 60.0, "family": 40.0}
-_CATEGORY_DUR = {"food": 3.0, "history": 2.5, "nature": 3.5,
-                 "nightlife": 4.0, "family": 3.0}
-
-
-# Hand-curated anchors for the most-recognized cities. Less-iconic cities get
-# generic procedural fill only — that's fine for v1.
-_NAMED_ACTIVITIES: dict[str, list[tuple[str, str]]] = {
-    "Tokyo": [
-        ("Senso-ji Temple visit", "history"),
-        ("Tsukiji Outer Market food tour", "food"),
-        ("Yoyogi Park stroll", "nature"),
-        ("Shibuya nightlife crawl", "nightlife"),
-        ("teamLab Planets", "family"),
-    ],
-    "Paris": [
-        ("Louvre Museum", "history"),
-        ("Le Marais food tour", "food"),
-        ("Bois de Boulogne walk", "nature"),
-        ("Pigalle nightlife tour", "nightlife"),
-        ("Disneyland Paris", "family"),
-    ],
-    "New York": [
-        ("Metropolitan Museum of Art", "history"),
-        ("Greenwich Village food tour", "food"),
-        ("Central Park bike loop", "nature"),
-        ("Lower East Side bar crawl", "nightlife"),
-        ("American Museum of Natural History", "family"),
-    ],
-    "London": [
-        ("British Museum", "history"),
-        ("Borough Market food tour", "food"),
-        ("Hampstead Heath walk", "nature"),
-        ("Shoreditch pub crawl", "nightlife"),
-        ("Tower of London", "family"),
-    ],
-    "Rome": [
-        ("Colosseum and Forum tour", "history"),
-        ("Trastevere food tour", "food"),
-        ("Villa Borghese gardens", "nature"),
-        ("Campo de Fiori nightlife", "nightlife"),
-        ("Vatican Museums", "family"),
-    ],
-    "Barcelona": [
-        ("Sagrada Familia", "history"),
-        ("Tapas tour in El Born", "food"),
-        ("Parc Guell", "nature"),
-        ("Gothic Quarter bar crawl", "nightlife"),
-        ("Barcelona Aquarium", "family"),
-    ],
-    "Bangkok": [
-        ("Grand Palace tour", "history"),
-        ("Street food tour in Chinatown", "food"),
-        ("Lumpini Park visit", "nature"),
-        ("Khao San Road nightlife", "nightlife"),
-        ("Safari World", "family"),
-    ],
-    "Sydney": [
-        ("Sydney Opera House tour", "history"),
-        ("Surry Hills food walk", "food"),
-        ("Bondi to Coogee coastal walk", "nature"),
-        ("The Rocks pub crawl", "nightlife"),
-        ("Taronga Zoo", "family"),
-    ],
-    "Lisbon": [
-        ("Jeronimos Monastery", "history"),
-        ("Time Out Market food tour", "food"),
-        ("Sintra day hike", "nature"),
-        ("Bairro Alto bar crawl", "nightlife"),
-        ("Oceanario de Lisboa", "family"),
-    ],
-    "Reykjavik": [
-        ("National Museum of Iceland", "history"),
-        ("Icelandic food tour", "food"),
-        ("Golden Circle tour", "nature"),
-        ("Laugavegur bar crawl", "nightlife"),
-        ("Whales of Iceland exhibition", "family"),
-    ],
-    "Mexico City": [
-        ("Teotihuacan pyramids", "history"),
-        ("Roma Norte taco crawl", "food"),
-        ("Chapultepec Park", "nature"),
-        ("Condesa cantina hop", "nightlife"),
-        ("Papalote Children's Museum", "family"),
-    ],
-    "Cape Town": [
-        ("Robben Island tour", "history"),
-        ("Bo-Kaap cooking class", "food"),
-        ("Table Mountain hike", "nature"),
-        ("Long Street bar crawl", "nightlife"),
-        ("Two Oceans Aquarium", "family"),
-    ],
-    "Istanbul": [
-        ("Hagia Sophia", "history"),
-        ("Karakoy food tour", "food"),
-        ("Bosphorus ferry cruise", "nature"),
-        ("Beyoglu nightlife crawl", "nightlife"),
-        ("Miniaturk", "family"),
-    ],
-    "Vancouver": [
-        ("Museum of Anthropology", "history"),
-        ("Granville Island food tour", "food"),
-        ("Stanley Park seawall", "nature"),
-        ("Gastown pub crawl", "nightlife"),
-        ("Vancouver Aquarium", "family"),
-    ],
-    "Singapore": [
-        ("National Museum of Singapore", "history"),
-        ("Hawker centre food tour", "food"),
-        ("Gardens by the Bay", "nature"),
-        ("Clarke Quay bar crawl", "nightlife"),
-        ("Singapore Zoo", "family"),
-    ],
-    "San Francisco": [
-        ("Alcatraz Island tour", "history"),
-        ("Mission taqueria crawl", "food"),
-        ("Golden Gate Park bike loop", "nature"),
-        ("North Beach bar crawl", "nightlife"),
-        ("Exploratorium", "family"),
-    ],
-}
-
-
 def _build_activity_pool(world: World, city_name: str, city: City) -> list[Activity]:
     rng = _seeded_rng_for(world, "activity_pool", city.iata)
     pool: list[Activity] = []
 
-    # 1) Hand-curated anchors (or generic stubs if missing).
-    named = _NAMED_ACTIVITIES.get(city_name, [])
+    # 1) Hand-curated anchors from world_data.NAMED_ACTIVITIES. Cities missing
+    # from that table get generic per-category stubs so every city has at
+    # least one option per category.
+    named = NAMED_ACTIVITIES.get(city_name, [])
     if not named:
-        # Generic per-category stubs so every city has at least one of each.
         named = [
             (f"{city_name} historic walking tour", "history"),
             (f"{city_name} street food sampler", "food"),
@@ -690,9 +468,9 @@ def _build_activity_pool(world: World, city_name: str, city: City) -> list[Activ
         ]
     for i, (nm, cat) in enumerate(named):
         noise = float(rng.uniform(-0.15, 0.15))
-        price = _CATEGORY_BASE[cat] * city.cost_multiplier * (1.0 + noise)
+        price = CATEGORY_BASE[cat] * city.cost_multiplier * (1.0 + noise)
         price = round(max(5.0, price), 2)
-        dur = _CATEGORY_DUR[cat] + float(rng.uniform(-0.5, 0.5))
+        dur = CATEGORY_DUR[cat] + float(rng.uniform(-0.5, 0.5))
         id_hash = _stable_hash("act", city.iata, "named", i, nm, cat)
         aid = f"act_{id_hash[:10]}"
         a = Activity(
@@ -721,9 +499,9 @@ def _build_activity_pool(world: World, city_name: str, city: City) -> list[Activ
         nb = nbhds[int(rng.integers(0, len(nbhds)))]
         nm = tmpl.format(nb=nb)
         noise = float(rng.uniform(-0.15, 0.15))
-        price = _CATEGORY_BASE[cat] * city.cost_multiplier * (1.0 + noise)
+        price = CATEGORY_BASE[cat] * city.cost_multiplier * (1.0 + noise)
         price = round(max(5.0, price), 2)
-        dur = _CATEGORY_DUR[cat] + float(rng.uniform(-0.5, 0.5))
+        dur = CATEGORY_DUR[cat] + float(rng.uniform(-0.5, 0.5))
         id_hash = _stable_hash("act", city.iata, "proc", i, nm, cat)
         aid = f"act_{id_hash[:10]}"
         a = Activity(
