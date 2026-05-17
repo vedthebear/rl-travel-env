@@ -118,16 +118,25 @@ def test_budget_efficiency_peaks_at_midpoint():
     assert val == pytest.approx(1.0, abs=1e-6)
 
 
-def test_budget_efficiency_zero_at_low_bound():
-    assert budget_efficiency(0.55 * 1000, 1000, low_ratio=0.55, high_ratio=0.95) == pytest.approx(0.0, abs=1e-6)
+def test_budget_efficiency_partial_credit_below_low_bound():
+    # The asymmetric bell ramps linearly from 0 (spent=0) up to 1.0 at the
+    # midpoint, so spending exactly at low_ratio is partway up the ramp —
+    # not flat-zero like the old symmetric bell.
+    val = budget_efficiency(0.55 * 1000, 1000, low_ratio=0.55, high_ratio=0.95)
+    midpoint = (0.55 + 0.95) / 2.0
+    assert val == pytest.approx(0.55 / midpoint, abs=1e-6)
 
 
-def test_budget_efficiency_zero_at_high_bound():
-    assert budget_efficiency(0.95 * 1000, 1000, low_ratio=0.55, high_ratio=0.95) == pytest.approx(0.0, abs=1e-6)
+def test_budget_efficiency_zero_at_hard_cap():
+    # The high side decays quadratically from the midpoint, reaching 0 only at
+    # the hard cap (ratio=1.0) — not at high_ratio. The hard gate handles
+    # everything past the cap, so this is the natural place to bottom out.
+    assert budget_efficiency(1000, 1000, low_ratio=0.55, high_ratio=0.95) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_budget_efficiency_concave():
-    """f(midpoint) > f(midpoint ± δ) > f(bounds)."""
+def test_budget_efficiency_monotone_around_midpoint():
+    # Linear ramp on the low side, quadratic decay on the high side — both
+    # strictly monotone toward the peak at the midpoint (ratio=0.75 here).
     f = budget_efficiency
     assert f(750, 1000) > f(700, 1000) > f(600, 1000)
     assert f(750, 1000) > f(800, 1000) > f(900, 1000)

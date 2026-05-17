@@ -43,8 +43,8 @@ exploit-defense thinking in detail; this docstring is a short tour.
   "always pick the highest-rated hotel"
     → 5-star Tokyo hotels for 5 nights × 2 people exceed most budget caps;
       the book tool refuses (env.py-side), so it never reaches reward.
-    → If it does fit, budget_efficiency's upper-bound penalty (zero at
-      ratio = high_ratio) cuts the reward.
+    → If it does fit, budget_efficiency's upper-bound penalty (quadratic
+      decay above the midpoint, reaching 0 at the hard cap) cuts the reward.
 
   "finish in one step"
     → Reward is only emitted at terminal (submit or truncation). With nothing
@@ -279,27 +279,40 @@ def budget_efficiency(
     low_ratio: float = 0.55,
     high_ratio: float = 0.95,
 ) -> float:
-    """Concave bell over spent/cap. Peaks at midpoint, zero at the bounds.
+    """Asymmetric bell: linear ramp up to midpoint, quadratic decay to 0 at the hard cap.
 
-    Tolerances are persona-supplied (`budget_low_ratio`, `budget_high_ratio`).
-    Defaults from DEFAULT_TOLERANCES if persona omits them.
+    The old symmetric bell hit zero at both `low_ratio` and `high_ratio`, which
+    meant "spend almost nothing" and "spend near the cap" looked identical to
+    the agent. Combined with the hard gate's cliff at ratio=1.0, that made
+    undershooting strictly safer than aggressive spending — which is why
+    "always pick the cheapest" was outscoring smarter policies. The asymmetry
+    here flips that: cheapness now pays a continuous price (linear ramp from 0),
+    while spending up toward the persona's natural ratio is the gradient
+    direction (gentle quadratic decay only reaches 0 at the hard cap).
 
-    Shape rationale:
-      - At ratio = 0 (spent nothing): score = 0. You almost certainly didn't
-        book anything → hard_constraint_gate is already failing → defense in depth.
-      - At ratio = midpoint (e.g. 0.75 default): score = 1.0. Sweet spot.
-      - At ratio = high_ratio (e.g. 0.95): score = 0. No buffer for refunds /
-        in-trip costs / rebook price deltas.
-      - At ratio > 1.0: would already fail the hard gate. Score doesn't matter.
+    Tolerances are persona-supplied (`budget_low_ratio`, `budget_high_ratio`)
+    via DEFAULT_TOLERANCES. Their role is unchanged: the midpoint is still
+    `(low_ratio + high_ratio) / 2`, so per-archetype tuning in
+    `persona.ARCHETYPE_BUDGET_BANDS` keeps working without edits.
+
+    Shape:
+      - ratio = 0:        score = 0    (spent nothing; gate is failing anyway)
+      - ratio = midpoint: score = 1.0  (sweet spot, unchanged from old bell)
+      - ratio = 1.0:      score = 0    (hand off to the hard gate)
     """
     if cap <= 0:
         return 0.0
     ratio = spent / cap
     midpoint = (low_ratio + high_ratio) / 2.0
-    half_width = (high_ratio - low_ratio) / 2.0
-    if half_width <= 0:
+    # Degenerate tolerances (midpoint at or past the bounds): keep the old
+    # exact-match behavior so callers don't get NaNs from div-by-zero below.
+    if midpoint <= 0.0 or midpoint >= 1.0:
         return 1.0 if abs(ratio - midpoint) < 1e-6 else 0.0
-    distance = (ratio - midpoint) / half_width
+    if ratio <= midpoint:
+        # Below the sweet spot: linear ramp from 0 (spent nothing) to 1.0 (midpoint).
+        return max(0.0, ratio / midpoint)
+    # Above the sweet spot: quadratic decay from 1.0 (midpoint) to 0 (hard cap).
+    distance = (ratio - midpoint) / (1.0 - midpoint)
     return max(0.0, 1.0 - distance ** 2)
 
 

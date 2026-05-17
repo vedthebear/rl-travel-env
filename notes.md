@@ -47,7 +47,7 @@ Plus history (with prior search results pruned to summaries — controls token g
 5 components, all bounded:
 1. `hard_constraint_gate` — multiplicative 0/1 (budget honored, dates match, slots filled)
 2. `preference_coverage` — weighted dot product against persona soft prefs
-3. `budget_efficiency` — concave, peaks at ~0.85 of cap (penalizes both "way under" and "right at cap")
+3. `budget_efficiency` — asymmetric: linear ramp up to the midpoint, quadratic decay above it down to 0 at the hard cap (so cheapness pays a continuous price, aggressiveness only loses near the cap)
 4. `coherence` — 0/1 (geometric + temporal feasibility)
 5. `recovery_quality` — conditional on a disruption firing
 6. small step penalty (anti-dither)
@@ -155,7 +155,7 @@ This was the README's flagged "hardest part." Spent extra cycles on the exploit 
 
 - **hard_constraint_gate {0, 1}**: budget ≤ cap; ≥1 booked hotel; ≥1 outbound + ≥1 return flight on the right routes; `no_overnight_flights` respected; `max_stops` respected; `required_amenities` present on all booked hotels. Multiplicative.
 - **preference_coverage [0, 1]**: weighted score over persona soft_prefs. Axes scored: `act_<category>` (linear up to 2 in-category activities — two beats one, two beats four; anti-greedy on the easy pref), `hotel_stars` (distance from target, tolerance-aware), `flight_cabin` (rank distance, tolerance-aware), `flight_max_stops` (1.0 if within target, linear decay above). Persona-omitted axes contribute nothing.
-- **budget_efficiency [0, 1]**: concave bell. **Tolerances are persona-supplied** — `budget_low_ratio` and `budget_high_ratio` from `profile.tolerances`. Peak at midpoint, zero at the bounds. Default 0.55–0.95 (peak 0.75). The bell shape is what makes "always cheapest" lose: even if you stay coherent, spending 30% of cap hits the lower zero.
+- **budget_efficiency [0, 1]**: asymmetric bell. **Tolerances are persona-supplied** — `budget_low_ratio` and `budget_high_ratio` from `profile.tolerances`. Linear ramp from 0 (spent nothing) up to 1.0 at the midpoint, quadratic decay above the midpoint down to 0 at the hard cap (ratio=1.0). Default 0.55–0.95 → midpoint 0.75. The asymmetry is what makes "always cheapest" lose: undershooting now pays a continuous price (ratio=0.3 scores ~0.4, not flat-zero), while spending up toward the persona's natural ratio is the gradient direction.
 - **coherence [0, 1] (partial)**: 5 checks — outbound route, return route, hotels in dest, activities in dest, dates aligned. Each check is 0 or 1; score = sum/5. Partial credit (not 0/1 binary) so a mostly-coherent itinerary doesn't get crushed by a single date typo.
 - **recovery_quality [0, 1] or None**: weighted 0.4 price_efficiency + 0.4 time_efficiency + 0.2 downstream_preservation. **None if no disruption fired** (remaining weights renormalized). Brutal: never rebooking = 0.
 - **step_penalty ≥ 0**: `0.005 × max(0, steps - 5)`. So 10 turns = -0.025, 20 turns = -0.075, 40 turns = -0.175. Meaningful at the high end, near-invisible for snappy episodes.
@@ -173,7 +173,7 @@ Why renormalize: keeps reward magnitudes comparable across episode types. Otherw
 | Exploit | Defense | Verified? |
 |---|---|---|
 | Always cheapest flight (multi-stop overnight) | hard.no_overnight + hard.max_stops gates kill it for luxury/business/family; for others, preference_coverage on cabin/stops penalizes it | ✅ luxury seed=0: gate=0, total=-0.025 |
-| Highest-rated hotel | book tool rejects if over cap (env-side); if it fits, budget_efficiency zeros past high_ratio | ✅ seed=42: gate=0, budget=0, total=-0.025 |
+| Highest-rated hotel | book tool rejects if over cap (env-side); if it fits, budget_efficiency decays quadratically above the midpoint and hits 0 at the hard cap | ✅ seed=42: gate=0, budget=0, total=-0.025 |
 | Finish in one step (submit immediately) | gate=0 with empty itinerary; reward=0 - step penalty | ✅ total=0 with steps=3 |
 | Ignore disruptions | recovery=0 + coherence fails (now missing a flight leg) + gate fails (incomplete) | structurally — triple penalty by construction |
 | Spam search | world.py search idempotence + step_penalty growth | structural |
@@ -191,12 +191,15 @@ Why renormalize: keeps reward magnitudes comparable across episode types. Otherw
 ```
 ratio = spent / cap
 midpoint = (low_ratio + high_ratio) / 2
-half_width = (high_ratio - low_ratio) / 2
-distance = (ratio - midpoint) / half_width
-score = max(0, 1 - distance²)
+if ratio <= midpoint:
+    score = ratio / midpoint                                 # linear ramp
+else:
+    score = max(0, 1 - ((ratio - midpoint) / (1 - midpoint))²)  # quadratic decay
 ```
 
-So at default tolerances (0.55, 0.95): peak at 0.75, score = 0.75 at ratio ≈ 0.85, score = 0.0 at ratio ≤ 0.55 or ≥ 0.95. Quadratic so penalties are gentle near the peak and steep near the bounds.
+So at default tolerances (0.55, 0.95): midpoint 0.75, score = 1.0 at ratio=0.75, score = 0.4 at ratio=0.3 (linear), score = 0.84 at ratio=0.85, score = 0.0 at ratio≥1.0. Linear ramp so undershooting pays a continuous price; quadratic decay so penalties are gentle near the peak and steep near the hard cap.
+
+The shape used to be a symmetric quadratic bell that hit 0 at both `low_ratio` and `high_ratio`. That made "spend almost nothing" and "spend near the cap" structurally identical from the agent's perspective — combined with the hard gate's cliff at ratio=1.0, undershooting was strictly safer than aggressive spending, which is most of why "always pick the cheapest" was outscoring smarter policies. The asymmetry flips that.
 
 ### things worth a /reward-shaping analysis later
 
@@ -238,6 +241,8 @@ Strict ordering on every metric: heuristic > cheapest > random. The reward funct
 The gap between cheapest and heuristic is mostly preference_coverage (0.40 → 0.50), driven by heuristic adding two activities per trip. If eval.py passed `profile` to baselines (currently it doesn't — clean separation), heuristic would pull further ahead via soft_pref-aware ranking. Worth flagging as a small enhancement.
 
 ### a surprising finding from the 100-seed eval pass
+
+Original numbers (symmetric budget bell, pre-asymmetric refactor):
 
 ```
 baseline     reward  gate%   pref  budget   coh   disrupt   recovery
@@ -283,6 +288,20 @@ business     0.70-0.98
 - after:  cheapest=0.400, heuristic=0.411, gap=+0.011
 
 Small effect. Most of the heuristic-over-cheapest delta lives in `preference_coverage` (activities), not `budget_efficiency`. Honest takeaway: the bands are a more principled model of persona budget expectations, but tightening them isn't enough to make cheapest look obviously bad. To widen the gap meaningfully, eval would need to pass `profile` so heuristic can use soft prefs in selection — that's the bigger lever.
+
+### asymmetric budget bell
+
+The symmetric quadratic bell was the bigger lever after all. With it hitting 0 at both `low_ratio` and `high_ratio`, both baselines were scoring ~0.20 on `budget_efficiency` (cheapest because it sat well below low_ratio, heuristic because it was only slightly above), so the axis wasn't differentiating them at all. Worse, the symmetry meant undershooting and overshooting looked equally bad to the agent — but only overshooting also risked tripping the hard gate at ratio=1.0. Net incentive: stay safely cheap.
+
+Replaced the shape with a linear ramp up to the midpoint, quadratic decay above it down to 0 at the hard cap. Same signature, same midpoint definition (so `ARCHETYPE_BUDGET_BANDS` keeps working unchanged). 100-seed re-run (scripted persona, seed=42):
+
+```
+                cheapest   heuristic   gap
+before          0.405      0.412       +0.007
+after           0.475      0.542       +0.067   (≈10× wider)
+```
+
+Both baselines' absolute rewards went up — the ramp now gives partial credit for any spending, where the old bell flat-zeroed everything below low_ratio. The headline is the gap: heuristic spends more, so it sits closer to the peak and pulls ahead on the budget axis (0.556 vs 0.461) where before both were ~0.20. The gap on budget alone (0.095) is bigger than the entire cheapest-vs-heuristic reward gap was under the old bell.
 
 ## eval
 
