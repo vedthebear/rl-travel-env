@@ -114,6 +114,25 @@ Properties we're baking in (and why):
 - **Persona-aware heuristic** — ceiling for non-learned policies. Respects soft prefs.
 - (Optional) LLM zero-shot if time.
 
+---
+
+## env.py decisions (during build)
+
+- **Modern Gymnasium 5-tuple API**: `obs, info = reset(seed=...)` and `obs, reward, terminated, truncated, info = step(action)`. Post-v0.26 convention. The rollout helper can collapse `terminated | truncated` to `done` for the LLM; env stays canonical.
+- **No `done` field in obs**. That's what terminated/truncated are for. Avoids the "two sources of truth" trap.
+- **Reward is 0 every step except the terminating one.** Sparse but principled — there's no meaningful per-step reward signal for travel planning ("good third turn" isn't a thing). The full `RewardBreakdown` is exposed via `info["reward_breakdown"]` for inspection.
+- **Tool dispatch via handler dict** (`self._handlers = {name: method}`), not if/elif. Cleaner, and adding/removing tools is one line in two places (registry + dict).
+- **Slots are free-form strings.** Agent picks the names. No env-side validation of slot taxonomy — the reward function's coherence check does the structural work. Keeps env permissive, reward strict.
+- **Two-tier validation**: env rejects *immediate* sanity violations (unknown item_id, double-book, budget overshoot on book) and returns them as tool errors. Reward rejects *structural* violations (incomplete itinerary, geographic infeasibility) by zeroing the gate. Clean separation.
+- **Tentative vs booked is meaningful state.** `add_to_itinerary` is free and reversible. `book` debits budget AND triggers the disruption roll. If a flight cancels, refund the slot price; agent has to rebook to recover.
+- **Hotel pricing**: stored as `price_per_night` in world.py; expanded to total at `add_to_itinerary` time using `nights = days(depart_date, return_date)` from the persona profile. Agent doesn't need to specify night counts — they're implicit in the trip dates.
+- **Disruption tick happens *before* tool dispatch each step.** So when a flight cancels on turn 12, the agent sees it as `last_result.disruption_fired` even if they were doing something else this turn. Avoids the "agent must explicitly poll for events" anti-pattern.
+- **Tool errors don't crash the env.** Any exception inside a handler is caught and surfaced as `{"ok": false, "error": "..."}`. Real RL needs robustness — a malformed JSON from a poorly-trained agent can't take down the whole episode.
+- **History pruning lives in `_render_obs`, not in the stored history.** Internal `self._history` keeps everything (for debugging, eval analysis). The exposed obs prunes the *last 3 turns kept in full, older search results collapsed to summaries* version. Bookings/feedback/proposals always stay in full because they're cheap and load-bearing for context.
+- **Auto-downgrade `persona_mode="llm"` to `"scripted"` if `OPENROUTER_API_KEY` unset.** No-key path always works — important for CI and for reviewers without credentials.
+- **`_action_from_input` accepts both `dict` and `Action`.** Rollout passes dicts (parsed from LLM JSON); programmatic baselines can pass `Action` directly. No JSON parsing in the env — that's the rollout's job.
+- **`info` dict shape mirrors Gymnasium expectations**: stable keys (`turn`, `reward_breakdown`, `disruption_fired_turn`). Reward breakdown is converted to a plain dict (not a dataclass) for serializability.
+
 ## eval
 
 `python eval.py --episodes 50 --seed 42 --baselines random,cheapest,heuristic [--llm-judge] [--persona-mode llm|scripted]`
