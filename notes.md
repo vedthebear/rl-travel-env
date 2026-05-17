@@ -237,6 +237,34 @@ Strict ordering on every metric: heuristic > cheapest > random. The reward funct
 
 The gap between cheapest and heuristic is mostly preference_coverage (0.40 → 0.50), driven by heuristic adding two activities per trip. If eval.py passed `profile` to baselines (currently it doesn't — clean separation), heuristic would pull further ahead via soft_pref-aware ranking. Worth flagging as a small enhancement.
 
+### a surprising finding from the 100-seed eval pass
+
+```
+baseline     reward  gate%   pref  budget   coh   disrupt   recovery
+random       -0.013     0%   0.01   0.01   0.02    0/100   - (n=0)
+cheapest     +0.405    78%   0.42   0.20   0.85    1/100   0.00 (n=1)
+heuristic    +0.412    79%   0.51   0.21   0.85   26/100   0.60 (n=26)
+```
+
+**Cheapest dodges disruptions almost entirely.** Only 1/100 episodes triggered a disruption that actually fired during the episode — because cheapest finishes in ~8 turns, and disruptions are scheduled `fires_at_turn = current_turn + rng.integers(1, 5)`. The episode ends before the trap springs.
+
+Heuristic takes more turns (search activities + add + book + propose), giving disruptions time to manifest — 26/100 episodes. Recovery quality of 0.60 over those 26 means it's rebooking but not always optimally (some turn-delay, some price overshoot).
+
+This isn't an exploit — it's a real dynamic: speed reduces disruption exposure. A real travel agent has the same tradeoff (book and bail vs. iterate with the client). The reward structure tolerates this because:
+- Cheapest still loses on `preference_coverage` (no activities → 0.42 vs heuristic's 0.51).
+- IF a disruption did fire and cheapest ignored it (booked the cancelled flight, never rebooked), the triple penalty (recovery=0, coherence fails on missing leg, gate fails on incomplete itinerary) still kicks in. The "ignore disruption" exploit is structurally defended; the "finish before disruption fires" path is just a feature of the dynamics.
+
+Worth flagging in the README: if we wanted to force cheapest to confront disruptions, we'd schedule them with `fires_at_turn = current_turn + 0..2` (same-turn possible) or raise the base rate. Trade-off: more disruptions also makes episodes longer and increases LLM rollout cost. Current calibration favors a clean signal.
+
+### test suite
+
+`uv run pytest tests/` — 88 tests, 0.31s, no network. Covers:
+- world: determinism, idempotence, filters, disruption distribution
+- persona: profile sampling, scripted voice, mismatch detection
+- env: 5-tuple step return, tool dispatch, budget/itinerary transitions, truncation
+- reward: every component + every documented exploit defense
+- baselines: each runs to completion, aggregate ordering holds
+
 ## eval
 
 `python eval.py --episodes 50 --seed 42 --baselines random,cheapest,heuristic [--llm-judge] [--persona-mode llm|scripted]`
