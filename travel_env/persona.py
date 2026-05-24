@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from travel_env.world import CITIES
+from travel_env.world_data import CITIES
 
 
 Archetype = Literal["budget", "luxury", "foodie", "family", "history_buff", "business"]

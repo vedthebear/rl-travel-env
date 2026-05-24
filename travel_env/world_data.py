@@ -1,15 +1,14 @@
 """Static data tables for the synthetic travel world.
 
 Pure data: no functions, no RNG, no logic. Pulled out of world.py so the
-generator/search code stays focused on logic, and so the dataset can grow
+generator/search code stays focused on logic, and the dataset can grow
 without churning the module that consumes it.
 
-Everything here is hardcoded by hand. The procedural generators in world.py
+Everything here is hardcoded and generated. The procedural generators in world.py
 read from these tables and combine them with seeded noise to produce the
-per-episode inventory the agent searches over.
+per-episode inventory the agent searches over. This is NOT the final dataset the agent will see.
 
-Note: world.py re-exports `CITIES` so other modules (persona.py, reward.py)
-that already do `from travel_env.world import CITIES` keep working unchanged.
+`CITIES` lives here as the single source of truth for the static city table.
 """
 
 from __future__ import annotations

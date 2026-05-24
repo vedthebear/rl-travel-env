@@ -71,7 +71,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from travel_env.persona import PersonaProfile
-from travel_env.world import CITIES
+from travel_env.world_data import CITIES
 
 
 # --- Weights -------------------------------------------------------------

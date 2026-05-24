@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 
 from travel_env.persona import PersonaProfile
-from travel_env.world import CITIES
+from travel_env.world_data import CITIES
 
 
 # Module-level: cheap two-way lookup so search results tagged with IATA

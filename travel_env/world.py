@@ -5,8 +5,7 @@ Real city names give the reviewer something concrete; inventory is fully synthet
 
 Static data (the city table, airlines, hotel naming, activity anchors, etc.)
 lives in travel_env.world_data so this module stays focused on generation and
-search logic. CITIES is re-exported from this module — `from travel_env.world
-import CITIES` (used by persona.py and reward.py) keeps working unchanged.
+search logic.
 """
 
 from __future__ import annotations
