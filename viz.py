@@ -2,6 +2,7 @@
 
 Usage:
     uv run python viz.py [--seed 42] [--baseline heuristic] [--turn-delay 0.4]
+    uv run python viz.py --baseline llm --extended   # 80-turn budget for slow agents
 
 Renders a 4-panel live dashboard (rich):
   - header   : seed, archetype, turn, request snippet
@@ -37,6 +38,9 @@ from travel_env.rollout import (
     render_system_prompt,
     render_turn_user_message,
 )
+
+DEFAULT_MAX_TURNS = 40
+EXTENDED_MAX_TURNS = 80
 
 
 # --- Per-status color so the eye tracks transitions ----------------------
@@ -338,7 +342,18 @@ def main() -> None:
     p.add_argument("--baseline",
                    choices=list(_POLICY_FACTORY) + ["llm"],
                    default="heuristic")
-    p.add_argument("--max-turns", type=int, default=40)
+    p.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help=f"Turn budget before truncation (default: {DEFAULT_MAX_TURNS}, "
+        f"or {EXTENDED_MAX_TURNS} with --extended).",
+    )
+    p.add_argument(
+        "--extended",
+        action="store_true",
+        help=f"Shorthand for --max-turns {EXTENDED_MAX_TURNS} (for LLM agents that need more steps).",
+    )
     p.add_argument("--turn-delay", type=float, default=0.4,
                    help="Seconds to sleep between turns (so a human can follow along).")
     p.add_argument("--persona-mode", choices=["scripted", "llm"], default="scripted")
@@ -350,9 +365,16 @@ def main() -> None:
     if args.persona_mode == "llm" and not os.environ.get("OPENROUTER_API_KEY"):
         args.persona_mode = "scripted"
 
+    if args.max_turns is not None:
+        max_turns = args.max_turns
+    elif args.extended:
+        max_turns = EXTENDED_MAX_TURNS
+    else:
+        max_turns = DEFAULT_MAX_TURNS
+
     visualize_episode(
         seed=args.seed, baseline=args.baseline,
-        max_turns=args.max_turns, turn_delay=args.turn_delay,
+        max_turns=max_turns, turn_delay=args.turn_delay,
         persona_mode=args.persona_mode,
         llm_model=args.llm_model,
     )

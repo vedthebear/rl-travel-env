@@ -53,6 +53,9 @@ POLICY_REGISTRY: dict[str, Callable[..., dict]] = {
 LLM_BASELINE = "llm"
 ALL_BASELINES: tuple[str, ...] = (*POLICY_REGISTRY.keys(), LLM_BASELINE)
 
+DEFAULT_MAX_TURNS = 40
+EXTENDED_MAX_TURNS = 80
+
 
 # --- Result type --------------------------------------------------------
 
@@ -307,7 +310,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--persona-model", type=str, default="anthropic/claude-haiku-4.5")
     parser.add_argument("--llm-model", type=str, default="anthropic/claude-haiku-4.5",
                         help="Model used for the 'llm' baseline rollout (via OpenRouter).")
-    parser.add_argument("--max-turns", type=int, default=40)
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help=f"Turn budget before truncation (default: {DEFAULT_MAX_TURNS}, "
+        f"or {EXTENDED_MAX_TURNS} with --extended).",
+    )
+    parser.add_argument(
+        "--extended",
+        action="store_true",
+        help=f"Shorthand for --max-turns {EXTENDED_MAX_TURNS} (for LLM agents that need more steps).",
+    )
     parser.add_argument("--llm-judge", action="store_true",
                         help="Score every episode with the LLM judge and report corr(rule, judge).")
     parser.add_argument("--render", action="store_true",
@@ -321,10 +335,17 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
+    if args.max_turns is not None:
+        max_turns = args.max_turns
+    elif args.extended:
+        max_turns = EXTENDED_MAX_TURNS
+    else:
+        max_turns = DEFAULT_MAX_TURNS
+
     weights = DEFAULT_WEIGHTS
     print(
         f"episodes={args.episodes} seed={args.seed} baselines={selected} "
-        f"persona_mode={args.persona_mode} judge={args.llm_judge}",
+        f"max_turns={max_turns} persona_mode={args.persona_mode} judge={args.llm_judge}",
         file=sys.stderr,
     )
     print(
@@ -345,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed=ep_seed,
                 persona_mode=args.persona_mode,
                 persona_model=args.persona_model,
-                max_turns=args.max_turns,
+                max_turns=max_turns,
                 weights=weights,
             )
             try:
